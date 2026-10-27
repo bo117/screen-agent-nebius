@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Screen Agent · Nemotron on Nebius</title>
+<style>
+  :root {
+    --bg: #0b0e14; --panel: #141922; --line: #232a36; --text: #e6edf3;
+    --dim: #8b98a9; --accent: #76b900; --accent2: #4aa8ff; --warn: #f0b429;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.6 -apple-system, "Segoe UI", "PingFang SC", sans-serif;
+  }
+  header {
+    padding: 14px 22px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  .tag {
+    font-size: 11px; padding: 2px 8px; border-radius: 999px;
+    border: 1px solid var(--line); color: var(--dim);
+  }
+  .tag.vl { border-color: #2d5b1f; color: #9ed36a; }
+  .tag.rs { border-color: #1f3f5b; color: #7cc0ff; }
+  main { display: grid; grid-template-columns: 380px 1fr; gap: 16px; padding: 16px 22px 40px; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+  .card h2 { font-size: 13px; margin: 0 0 10px; color: var(--dim); font-weight: 600; letter-spacing: .04em; }
+  #drop {
+    border: 1.5px dashed var(--line); border-radius: 10px; padding: 26px 16px;
+    text-align: center; color: var(--dim); cursor: pointer; transition: .2s;
+  }
+  #drop:hover, #drop.on { border-color: var(--accent); color: var(--text); }
+  #preview { width: 100%; border-radius: 8px; margin-top: 10px; display: none; }
+  .row { display: flex; gap: 8px; margin-top: 10px; }
+  button {
+    background: var(--accent); color: #0a1200; border: 0; border-radius: 8px;
+    padding: 9px 14px; font-weight: 600; cursor: pointer; font-size: 13px;
+  }
+  button.ghost { background: transparent; color: var(--text); border: 1px solid var(--line); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  input[type=text] {
+    flex: 1; background: #0e131b; border: 1px solid var(--line); color: var(--text);
+    border-radius: 8px; padding: 9px 12px; font-size: 13px; outline: none;
+  }
+  input[type=text]:focus { border-color: var(--accent2); }
+  .kv { display: grid; grid-template-columns: 96px 1fr; gap: 4px 10px; font-size: 13px; }
+  .kv dt { color: var(--dim); }
+  .kv dd { margin: 0; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .chip { font-size: 12px; padding: 2px 8px; border-radius: 6px; background: #1b2230; color: #b9c6d6; }
+  #answer { white-space: pre-wrap; }
+  .turn { border-top: 1px solid var(--line); padding-top: 10px; margin-top: 10px; }
+  .turn .q { color: var(--accent2); }
+  .turn .a { color: var(--text); margin-top: 4px; white-space: pre-wrap; }
+  .muted { color: var(--dim); font-size: 12px; }
+  .spin { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--line);
+    border-top-color: var(--accent); border-radius: 50%; animation: sp .8s linear infinite; }
+  @keyframes sp { to { transform: rotate(360deg); } }
+  .err { color: #ff8a8a; font-size: 13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Screen Agent</h1>
+  <span class="tag vl">看 · Nemotron 3.5 Super VL</span>
+  <span class="tag rs">想 · Nemotron 3 Ultra</span>
+  <span class="tag">Nebius Token Factory</span>
+  <span class="muted" id="health"></span>
+</header>
+
+<main>
+  <section class="card">
+    <h2>1 · 上传画面</h2>
+    <div id="drop">点击或拖入截图 / 照片</div>
+    <input type="file" id="file" accept="image/*" hidden>
+    <img id="preview" alt="preview">
+    <div class="row">
+      <button id="look" disabled>先看（视觉理解）</button>
+    </div>
+    <p class="muted" style="margin-top:10px">
+      只做"看"：识别界面、读文字、定位元素，不猜意图。
+    </p>
+  </section>
+
+  <section class="card">
+    <h2>2 · 视觉描述</h2>
+    <div id="vl"><span class="muted">上传后点「先看」</span></div>
+
+    <h2 style="margin-top:18px">3 · 问答与推理</h2>
+    <div class="row">
+      <input type="text" id="q" placeholder="这张图里有什么？我接下来该做什么？" disabled>
+      <button id="ask" disabled>问</button>
+    </div>
+    <div class="row">
+      <input type="text" id="fix" placeholder="纠正它：不不，它是个苹果，我要重新检验一遍。" disabled>
+      <button id="correct" class="ghost" disabled>纠正</button>
+    </div>
+    <div id="log"></div>
+    <div id="err" class="err"></div>
+  </section>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+let imageId = null, history = [];
+
+fetch('/api/health').then(r => r.json()).then(d => {
+  $('#health').textContent = d.has_key ? 'API ready' : '缺 NEBIUS_API_KEY';
+});
+
+const drop = $('#drop'), file = $('#file'), preview = $('#preview');
+drop.onclick = () => file.click();
+drop.ondragover = e => { e.preventDefault(); drop.classList.add('on'); };
+drop.ondragleave = () => drop.classList.remove('on');
+drop.ondrop = e => {
+  e.preventDefault(); drop.classList.remove('on');
+  if (e.dataTransfer.files[0]) upload(e.dataTransfer.files[0]);
+};
+file.onchange = () => file.files[0] && upload(file.files[0]);
+
+async function upload(f) {
+  const fd = new FormData(); fd.append('file', f);
+  preview.src = URL.createObjectURL(f); preview.style.display = 'block';
+  $('#err').textContent = '';
+  try {
+    const r = await fetch('/api/upload', { method: 'POST', body: fd });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || d.error || 'upload failed');
+    imageId = d.image_id; history = [];
+    $('#look').disabled = false; $('#q').disabled = false;
+    $('#ask').disabled = false; $('#fix').disabled = false; $('#correct').disabled = false;
+    $('#vl').innerHTML = '<span class="muted">已就绪，点「先看」</span>';
+    $('#log').innerHTML = '';
+  } catch (e) { $('#err').textContent = '上传失败：' + e.message; }
+}
+
+function busy(el, on) {
+  el.disabled = on;
+  if (on) el.dataset.t = el.textContent, el.innerHTML = '<span class="spin"></span>';
+  else if (el.dataset.t) el.textContent = el.dataset.t;
+}
+
+function renderVL(vl) {
+  if (!vl) return '<span class="muted">无</span>';
+  if (vl.parse_error) return '<pre style="white-space:pre-wrap">' + (vl.raw || '') + '</pre>';
+  const esc = s => String(s ?? '').replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+  let h = '<dl class="kv">';
+  h += `<dt>场景</dt><dd>${esc(vl.scene || '-')}</dd>`;
+  if (vl.app_name) h += `<dt>应用</dt><dd>${esc(vl.app_name)}</dd>`;
+  h += `<dt>布局</dt><dd>${esc(vl.layout || '-')}</dd>`;
+  h += `</dl>`;
+  if (vl.texts?.length) h += '<div class="chips">' + vl.texts.slice(0, 8).map(t => `<span class="chip">${esc(t)}</span>`).join('') + '</div>';
+  if (vl.elements?.length) {
+    h += '<p class="muted" style="margin:10px 0 4px">元素（' + vl.elements.length + '）</p><div class="chips">';
+    h += vl.elements.slice(0, 10).map(e => `<span class="chip">${esc(e.name)} · ${esc(e.role)}</span>`).join('');
+    h += '</div>';
+  }
+  if (vl.uncertain?.length) {
+    h += '<p class="muted" style="margin:10px 0 4px">不确定</p><div class="chips">';
+    h += vl.uncertain.map(u => `<span class="chip" style="color:#f0b429">${esc(u)}</span>`).join('') + '</div>';
+  }
+  return h;
+}
+
+$('#look').onclick = async () => {
+  busy($('#look'), true); $('#err').textContent = '';
+  try {
+    const r = await fetch('/api/look', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image_id: imageId })
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || d.error);
+    $('#vl').innerHTML = renderVL(d.vl);
+  } catch (e) { $('#err').textContent = '视觉模型出错：' + e.message; }
+  busy($('#look'), false);
+};
+
+function addTurn(q, a, cls) {
+  const div = document.createElement('div');
+  div.className = 'turn';
+  div.innerHTML = `<div class="q">你：${q}</div><div class="a">${(a || '').replace(/</g,'&lt;')}</div>`;
+  if (cls) div.querySelector('.a').style.color = 'var(--warn)';
+  $('#log').appendChild(div);
+}
+
+$('#ask').onclick = async () => {
+  const q = $('#q').value.trim();
+  if (!q) return;
+  busy($('#ask'), true); $('#err').textContent = '';
+  try {
+    const r = await fetch('/api/ask', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image_id: imageId, question: q, history })
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || d.error);
+    addTurn(q, d.answer);
+    history.push({ role: 'user', content: q }, { role: 'assistant', content: d.answer });
+    if (d.vl) $('#vl').innerHTML = renderVL(d.vl);
+    $('#q').value = '';
+  } catch (e) { $('#err').textContent = '推理模型出错：' + e.message; }
+  busy($('#ask'), false);
+};
+
+$('#correct').onclick = async () => {
+  const c = $('#fix').value.trim();
+  if (!c) return;
+  busy($('#correct'), true); $('#err').textContent = '';
+  try {
+    const r = await fetch('/api/correct', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image_id: imageId, correction: c })
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || d.error);
+    addTurn('（纠正）' + c, d.answer, true);
+    if (d.vl) $('#vl').innerHTML = renderVL(d.vl);
+    $('#fix').value = '';
+  } catch (e) { $('#err').textContent = '纠正失败：' + e.message; }
+  busy($('#correct'), false);
+};
+
+$('#q').addEventListener('keydown', e => { if (e.key === 'Enter') $('#ask').click(); });
+$('#fix').addEventListener('keydown', e => { if (e.key === 'Enter') $('#correct').click(); });
+</script>
+</body>
+</html>
